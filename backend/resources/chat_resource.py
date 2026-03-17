@@ -6,10 +6,16 @@
 
 import logging
 
-from flask import Response, request
+from flask import request
 from flask_restful import Resource
 
 from services.chat_service import ChatService
+from utils.request_manager.exceptions import (
+    ConfigurationError,
+    ExternalServiceError,
+    NotFoundError,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +60,7 @@ class ChatResource(Resource):
         """创建会话或发送消息"""
         try:
             if session_id:
-                # 发送消息到指定会话
+                # 发送消息到指定会话（非流式）
                 try:
                     data = request.get_json()
                 except Exception as json_error:
@@ -66,36 +72,28 @@ class ChatResource(Resource):
                         "message": "请求格式错误，请检查JSON格式",
                     }, 400
 
-                if not data or "content" not in data:
+                if not data:
                     return {"success": False, "message": "消息内容不能为空"}, 400
 
-                content = data["content"]
-                mode = data.get("mode", "normal")
-                file_id = data.get("file_id")
+                query = (data.get("query") or data.get("content") or "").strip()
+                if not query:
+                    return {"success": False, "message": "query 不能为空"}, 400
 
-                # 创建流式响应
-                def generate():
-                    try:
-                        for chunk in self.chat_service.send_message_stream(
-                            session_id, content, mode=mode, file_id=file_id
-                        ):
-                            yield f"data: {chunk}\n\n"
-                    except Exception as e:
-                        logger.error(f"发送消息失败: {str(e)}")
-                        yield f'data: {{"error": "发送消息失败: {str(e)}"}}\n\n'
-                    finally:
-                        yield "data: [DONE]\n\n"
-
-                return Response(
-                    generate(),
-                    mimetype="text/plain",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Headers": "Content-Type",
-                    },
+                mode = (
+                    (data.get("mode") or "normal").strip()
+                    if isinstance(data, dict)
+                    else "normal"
                 )
+                file_id = data.get("file_id") if isinstance(data, dict) else None
+                kb_id = data.get("kb_id") if isinstance(data, dict) else None
+                result = self.chat_service.send_message(
+                    session_id,
+                    query,
+                    mode=mode,
+                    file_id=file_id,
+                    kb_id=kb_id,
+                )
+                return {"success": True, "data": result}
             else:
                 # 创建新会话
                 try:
@@ -115,6 +113,18 @@ class ChatResource(Resource):
                 session = self.chat_service.get_session(session_id)
 
                 return {"success": True, "data": session}, 201
+        except ValidationError as e:
+            logger.error(f"参数错误: {str(e)}")
+            return {"success": False, "message": str(e)}, 400
+        except NotFoundError as e:
+            logger.error(f"资源不存在: {str(e)}")
+            return {"success": False, "message": str(e)}, 404
+        except ConfigurationError as e:
+            logger.error(f"配置错误: {str(e)}")
+            return {"success": False, "message": str(e)}, 500
+        except ExternalServiceError as e:
+            logger.error(f"外部服务错误: {str(e)}")
+            return {"success": False, "message": str(e)}, 502
         except Exception as e:
             logger.error(f"操作失败: {str(e)}")
             return {"success": False, "message": "操作失败"}, 500

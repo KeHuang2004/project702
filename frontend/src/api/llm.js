@@ -6,7 +6,7 @@ import request from '@/utils/request'
  * @param {string} prompt 提示词
  * @param {(data:string)=>void} onMessage 回调，入参为每行的 JSON 字符串（不含 'data: ' 前缀）
  */
-const BASE = import.meta.env.VITE_API_BASE_URL || ''
+const BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:11550'
 
 export async function generateStream(prompt, onMessage) {
   const response = await fetch(`${BASE}/api/v1/generate`, {

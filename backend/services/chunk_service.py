@@ -232,14 +232,34 @@ class ChunkService(BaseService):
     def get_chunks_by_ids(self, chunk_ids: List[int]) -> List[Chunk]:
         if not chunk_ids:
             return []
-        placeholders = ",".join(["?" for _ in chunk_ids])
+
+        # SQLite 默认参数上限通常为 999，预留余量避免 "too many SQL variables"
+        batch_size = 800
+        normalized_ids: List[int] = []
+        for cid in chunk_ids:
+            try:
+                normalized_ids.append(int(cid))
+            except (TypeError, ValueError):
+                continue
+
+        if not normalized_ids:
+            return []
+
+        fetched_rows = []
         with DatabaseConnection.get_cursor() as (cursor, conn):
-            cursor.execute(
-                f"SELECT * FROM chunks WHERE id IN ({placeholders})",
-                tuple(chunk_ids),
-            )
-            rows = cursor.fetchall()
-            return [Chunk.from_row(r) for r in rows]
+            for i in range(0, len(normalized_ids), batch_size):
+                batch_ids = normalized_ids[i : i + batch_size]
+                placeholders = ",".join(["?" for _ in batch_ids])
+                cursor.execute(
+                    f"SELECT * FROM chunks WHERE id IN ({placeholders})",
+                    tuple(batch_ids),
+                )
+                fetched_rows.extend(cursor.fetchall())
+
+        # 保持与输入 chunk_ids 一致的顺序
+        row_map = {int(r["id"]): r for r in fetched_rows}
+        ordered_rows = [row_map[cid] for cid in normalized_ids if cid in row_map]
+        return [Chunk.from_row(r) for r in ordered_rows]
 
     def embed_chunks_by_ids(
         self,

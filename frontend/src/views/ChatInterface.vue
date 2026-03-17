@@ -95,18 +95,6 @@
               <!-- 模型选择已移除，模型由后端配置统一管理 -->
               <!-- 模式由顶部全局模式栏控制（通过 provide/inject） -->
 
-              <!-- RAG 模式下的知识库选择器 -->
-              <div v-if="ragMode === 'rag'" class="rag-kb-selector">
-                <el-select v-model="selectedKbId" placeholder="选择检索知识库" size="small" @change="onKbChange" style="min-width: 240px;">
-                  <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
-                </el-select>
-                <span class="kb-stats" v-if="selectedKbId">文本块：{{ totalChunks }}；RAG TopK：{{ computedTopK }}</span>
-              </div>
-
-              <!-- Summary 模式下的文件显示 -->
-              <div v-if="ragMode === 'summary'" class="summary-file-selector">
-                <span>要点提炼文件：{{ selectedFileName || '未选择' }}</span>
-              </div>
             </div>
           </div>
 
@@ -147,7 +135,13 @@
           <div class="input-area">
             <div class="input-container">
               <div class="input-wrapper">
+                <div v-if="isSummaryMode" class="summary-fixed-prompt">
+                  请帮我对
+                  <span class="summary-file-name">{{ selectedFileName || '未选择文件' }}</span>
+                  这个文件进行要点提炼。
+                </div>
                 <el-input
+                  v-else
                   v-model="inputMessage"
                   type="textarea"
                   :rows="1"
@@ -162,7 +156,7 @@
                   <el-button
                     type="primary"
                     @click="sendMessage"
-                    :disabled="!inputMessage.trim() || isLoading"
+                    :disabled="!canSendMessage"
                     :loading="isLoading"
                     class="send-btn"
                   >
@@ -210,8 +204,6 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { chatAPI } from '@/api/chat'
-import { getKnowledgeBaseListWithBasics, getKnowledgeBaseAttributes, retrieveChunks } from '@/api/knowledge'
-import { generateStream } from '@/api/llm'
 import ChatMessage from '@/components/ChatMessage.vue'
 import { useRouter, useRoute } from 'vue-router'
 
@@ -254,38 +246,36 @@ const searchKeyword = ref('')
 // 使用 App 提供的全局模式
 const ragMode = inject('appMode', ref('generate'))
 
-// RAG 相关状态
-const knowledgeBases = ref([])
-const selectedKbId = ref(null)
-const totalChunks = ref(0)
+const selectedKbId = ref(localStorage.getItem('selectedRagKbId') || '')
 const selectedFileName = ref(localStorage.getItem('selectedFileName') || '')
-const computedTopK = computed(() => {
-  const total = Number(totalChunks.value) || 0
-  if (total <= 0) return 0
-  if (total < 10) return total
-  if (total <= 50) return 10
-  return Math.max(10, Math.floor(total / 10))
+const isSummaryMode = computed(() => ragMode.value === 'summary')
+const summaryPrompt = computed(() => {
+  const fileName = selectedFileName.value || '未选择文件'
+  return `请帮我对 ${fileName} 这个文件进行要点提炼。`
+})
+const canSendMessage = computed(() => {
+  if (isLoading.value) return false
+  if (isSummaryMode.value) return Boolean(localStorage.getItem('selectedFileId'))
+  if (ragMode.value === 'rag') return Boolean(selectedKbId.value)
+  return Boolean(inputMessage.value.trim())
 })
 
-const loadKnowledgeBases = async () => {
-  try {
-    const basics = await getKnowledgeBaseListWithBasics()
-    knowledgeBases.value = basics || []
-  } catch (e) {
-    console.error('加载知识库列表失败:', e)
-  }
-}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const onKbChange = async () => {
-  totalChunks.value = 0
-  if (!selectedKbId.value) return
-  try {
-    const res = await getKnowledgeBaseAttributes(selectedKbId.value, ['files_list'])
-    const ids = res?.data?.files_list || []
-    totalChunks.value = Array.isArray(ids) ? ids.length : 0
-  } catch (e) {
-    console.error('统计文本块失败:', e)
+const replayAssistantMessage = async (content) => {
+  const text = String(content || '')
+  if (!text) return ''
+
+  const chunks = text.match(/.{1,4}/gs) || [text]
+  for (const chunk of chunks) {
+    stream.value.content += chunk
+    await nextTick()
+    scrollToBottom()
+    const hasPausePunctuation = /[，。！？；：,.!?;:]/.test(chunk)
+    await sleep(hasPausePunctuation ? 160 : 90)
   }
+
+  return text
 }
 
 const goToKnowledge = () => {
@@ -318,19 +308,10 @@ const filteredChatList = computed(() => {
 onMounted(async () => {
   await loadChatList()
   console.log('聊天界面已加载')
-  // 进入聊天页时，如为 RAG 模式，尝试加载知识库列表
-  if (ragMode.value === 'rag') {
-    loadKnowledgeBases()
-  }
-  // 检查是否需要自动发送要点提炼请求
-  const autoSend = localStorage.getItem('autoSend')
-  if (autoSend === 'true' && ragMode.value === 'summary') {
-    localStorage.removeItem('autoSend')
-    // 自动发送要点提炼请求
-    setTimeout(() => {
-      inputMessage.value = '请对这篇文献进行要点提炼'
-      sendMessage()
-    }, 500) // 延迟一点，确保界面加载完成
+  selectedKbId.value = localStorage.getItem('selectedRagKbId') || ''
+  if (isSummaryMode.value) {
+    selectedFileName.value = localStorage.getItem('selectedFileName') || ''
+    inputMessage.value = summaryPrompt.value
   }
 })
 
@@ -403,12 +384,20 @@ const newChat = async () => {
   }
 }
 
-// 发送消息（处理流式响应）
+// 发送消息：后端始终返回完整响应，前端自行做伪流式展示
 const sendMessage = async () => {
-  if (!inputMessage.value.trim() || isLoading.value) return
+  if (isLoading.value) return
+  if (isSummaryMode.value && !localStorage.getItem('selectedFileId')) {
+    ElMessage.warning('请先在要点提炼中选择文件')
+    return
+  }
 
-  const message = inputMessage.value.trim()
-  inputMessage.value = ''
+  const message = isSummaryMode.value ? summaryPrompt.value : inputMessage.value.trim()
+  if (!message) return
+
+  if (!isSummaryMode.value) {
+    inputMessage.value = ''
+  }
   isLoading.value = true
   stream.value = { content: '' }
 
@@ -431,94 +420,46 @@ const sendMessage = async () => {
     await nextTick()
     scrollToBottom()
 
-    if (ragMode.value === 'rag') {
-      // RAG 管线：抽取 -> 检索 -> 重写
-      if (!selectedKbId.value) {
+    {
+      if (ragMode.value === 'rag' && !selectedKbId.value) {
         ElMessage.warning('请选择用于检索的知识库')
         isLoading.value = false
         return
       }
 
-      // 1) 抽取检索内容（流式获取但不展示，仅聚合）
-      const extractionPrompt = `请阅读以下用户问题，从中识别需要检索的具体内容（关键词或问题主体）。\n只输出格式：<<内容>>，不要添加其他说明或符号。\n用户问题：${message}`
-      let rawExtract = ''
-      await generateStream(extractionPrompt, (line) => {
-        if (line === '[DONE]') return
-        try {
-          const obj = JSON.parse(line)
-          if (obj?.content) rawExtract += obj.content
-        } catch { /* ignore */ }
-      })
-      const match = rawExtract.match(/<<\s*([\s\S]*?)\s*>>/)
-      const extracted = (match ? match[1] : rawExtract).trim()
-      if (!extracted) {
-        ElMessage.warning('未能从问题中抽取到检索内容，已按原问题检索')
+      const selectedFileId = localStorage.getItem('selectedFileId')
+      const payload = {
+        query: message,
+        mode: ragMode.value === 'rag' ? 'rag' : (isSummaryMode.value ? 'summary' : 'normal'),
+        file_id: isSummaryMode.value && selectedFileId ? Number(selectedFileId) : undefined,
+        kb_id: ragMode.value === 'rag' ? Number(selectedKbId.value) : undefined,
       }
-
-      // 2) 固定 TopK=10，threshold=0.01 检索
-      const topK = 10
-      const threshold = 0.01
-      const queryText = extracted || message
-      const retrieveRes = await retrieveChunks(selectedKbId.value, { query: queryText, top_k: topK, threshold })
-      const results = retrieveRes?.data?.results || []
-
-      // 3) 组织引用与重写
-      const citations = results.map(r => `<<${r.file_name || r.file_id}/${r.chunk_id}>>`).join('，')
-      const snippets = results.map(r => `- ${r.chunk_text}`).join('\n')
-      const finalPrompt = `用户想要查询的内容是：<<${queryText}>>。\n在知识库中返回的结果是：\n${snippets}\n请你基于这些材料组织语言完成回复。\n要求：\n1. 引用到的文献需要做说明，格式为：<<file/文本块>>；\n2. 如材料不足以回答，请明确说明原因。\n引用：${citations}`
-      let finalBuffer = ''
-      await generateStream(finalPrompt, (line) => {
-        if (line === '[DONE]') return
-        try {
-          const obj = JSON.parse(line)
-          if (obj?.content) {
-            finalBuffer += obj.content
-            // 流式展示仅最终回复
-            stream.value.content += obj.content
-            nextTick(() => scrollToBottom())
-          }
-        } catch { /* ignore */ }
-      })
-      // 流结束：将最终回复持久到消息列表，并清空流缓冲
+      const response = await chatAPI.sendMessage(currentChat.value.id, payload)
+      const reply = response?.data?.reply || null
+      const replyContent = reply?.content || ''
+      await replayAssistantMessage(replyContent)
       currentChat.value.messages.push({
-        id: Date.now() + 1,
+        id: reply?.id || Date.now() + 1,
         role: 'assistant',
-        content: finalBuffer || '（生成失败）',
-        created_at: new Date().toISOString()
+        content: replyContent,
+        created_at: reply?.created_at || new Date().toISOString(),
       })
-      await nextTick(); scrollToBottom()
-      isLoading.value = false; stream.value.content = ''
-    } else {
-      // 普通模式或特殊模式：走原有流式接口
-      const payload = { content: message }
-      if (ragMode.value === 'summary') {
-        payload.mode = 'summary'
-        const selectedFileId = localStorage.getItem('selectedFileId')
-        payload.file_id = selectedFileId ? Number(selectedFileId) : null
+      await nextTick()
+      scrollToBottom()
+      stream.value.content = ''
+      isLoading.value = false
+      if (isSummaryMode.value) {
+        inputMessage.value = summaryPrompt.value
       }
-      await chatAPI.sendMessageStream(currentChat.value.id, payload, (chunk) => {
-        if (chunk === '[DONE]') {
-          selectChat(currentChat.value)
-          stream.value.content = ''
-          isLoading.value = false
-        } else {
-          try {
-            const data = JSON.parse(chunk)
-            if (data.content) {
-              processStreamChunk(data.content)
-              nextTick(() => scrollToBottom())
-            }
-          } catch (e) {
-            console.warn('解析流式响应失败:', e)
-          }
-        }
-      })
     }
   } catch (error) {
     console.error('发送消息失败:', error)
     ElMessage.error('发送消息失败，请重试')
     isLoading.value = false
     stream.value = { content: '' }
+    if (isSummaryMode.value) {
+      inputMessage.value = summaryPrompt.value
+    }
   }
 }
 
@@ -784,6 +725,26 @@ watch(
       return
     }
     await applyRouteSelection(newTitle)
+  }
+)
+
+watch(
+  () => ragMode.value,
+  (mode) => {
+    if (mode === 'summary') {
+      selectedFileName.value = localStorage.getItem('selectedFileName') || ''
+      inputMessage.value = summaryPrompt.value
+    } else if (mode === 'rag') {
+      selectedKbId.value = localStorage.getItem('selectedRagKbId') || ''
+      if (!selectedKbId.value) {
+        ElMessage.warning('请先点击顶部 RAG 模式按钮并选择知识库')
+      }
+      if (!isLoading.value) {
+        inputMessage.value = ''
+      }
+    } else if (!isLoading.value) {
+      inputMessage.value = ''
+    }
   }
 )
 
@@ -1229,6 +1190,25 @@ watch(
   align-items: flex-end;
   gap: 12px;
   padding: 8px;
+}
+
+.summary-fixed-prompt {
+  flex: 1;
+  min-height: 44px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #374151;
+  padding: 10px 12px;
+  line-height: 1.6;
+}
+
+.summary-file-name {
+  color: #1d4ed8;
+  font-weight: 700;
+  background: #e7efff;
+  border-radius: 6px;
+  padding: 2px 8px;
 }
 
 /* 文本输入框 */

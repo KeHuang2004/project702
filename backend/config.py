@@ -101,7 +101,7 @@ class Config:
     VLLM_HOST = os.environ.get("VLLM_HOST", "127.0.0.1")
 
  
-    # —— 嵌入/重排/问答 模型的基本配置 ——
+    # —— 嵌入/重排 模型的基本配置 ——
     EMBEDDING_SERVE = {
         "model_path": "/data/home/huangke/project702/models/Qwen3-Embedding-0.6B",
         "port": 11500,
@@ -114,11 +114,24 @@ class Config:
         "gpu_memory_utilization": 0.2,
     }
 
+    # —— 问答模型的基本配置 ——
+    # llm_mode 用于指定问答模型的调用方式：local 或 remote
+    llm_mode = "remote"
+
+    # local 模式下使用本地问答模型服务
     CHAT_SERVE = {
         "model_path": "/data/home/huangke/project702/models/DeepSeek-R1-Distill-Qwen-7B",
         "port": 11520,
         "gpu_memory_utilization": 0.5,
     }
+
+    # remote 模式下使用外部问答模型服务
+    llm_api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    llm_api_key = "sk-f5d4e6d321bc49cfb6e9656c012078ca"
+    llm_model = "qwen3.5-flash"
+    # 远程问答调用稳健性配置
+    llm_request_timeout = 90
+    llm_request_retries = 2
 
 
 

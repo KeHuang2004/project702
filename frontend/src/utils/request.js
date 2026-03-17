@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 
 // 创建 axios 实例
 const request = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '', // 使用同源 + 代理
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:11550',
   withCredentials: false, // 是否携带cookie
 })
 
@@ -14,8 +14,11 @@ request.interceptors.request.use(
 
     // 如果有 token，添加到请求头
     const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-    if (token) {
+    // 避免异常超长 token 导致开发服务器/代理出现 431 请求头过大
+    if (token && token.length <= 4096) {
       config.headers.Authorization = `Bearer ${token}`
+    } else if (token && token.length > 4096) {
+      console.warn('检测到异常超长 token，已跳过 Authorization 头以避免 431 错误')
     }
 
     // 设置默认请求头
