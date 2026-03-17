@@ -25,7 +25,7 @@ class Reranker:
                 self.endpoint,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=getattr(Config, "API_TIMEOUT", 30),
+                timeout=getattr(Config, "RERANK_TIMEOUT", getattr(Config, "API_TIMEOUT", 30)),
             )
             resp.raise_for_status()
             data_json = resp.json()

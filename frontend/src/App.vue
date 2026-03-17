@@ -68,6 +68,15 @@
             </el-button>
             <el-button
               size="medium"
+              :type="appModeValue === 'literature-review' ? 'primary' : 'default'"
+              class="review-mode-btn"
+              :disabled="!canSelectSummaryMode"
+              @click="handleLiteratureReviewModeClick"
+            >
+              文献综述
+            </el-button>
+            <el-button
+              size="medium"
               :type="appModeValue === 'summary' ? 'primary' : 'default'"
               class="summary-mode-btn"
               :disabled="!canSelectSummaryMode"
@@ -80,6 +89,12 @@
               class="rag-selected-kb"
             >
               当前检索库：{{ selectedRagKbName }}
+            </span>
+            <span
+              v-if="appModeValue === 'literature-review' && selectedReviewKbName"
+              class="rag-selected-kb"
+            >
+              当前综述库：{{ selectedReviewKbName }}
             </span>
           </div>
         </div>
@@ -206,6 +221,53 @@
         </template>
       </el-dialog>
 
+      <el-dialog
+        v-model="reviewDialogVisible"
+        title="文献综述设置"
+        width="640px"
+        destroy-on-close
+      >
+        <div class="summary-dialog-body">
+          <div class="summary-row">
+            <div class="summary-row-label">请选择文献综述使用的知识库</div>
+            <el-input
+              v-model="kbSearchKeyword"
+              placeholder="搜索知识库名称"
+              clearable
+              class="summary-search-input"
+            />
+            <el-select
+              v-model="reviewSelection.kbId"
+              placeholder="未选择"
+              clearable
+              filterable
+              class="summary-select"
+            >
+              <el-option
+                v-for="kb in pagedKbOptions"
+                :key="kb.id"
+                :label="kb.name"
+                :value="kb.id"
+              />
+            </el-select>
+            <el-pagination
+              v-if="filteredKbOptions.length > kbPageSize"
+              v-model:current-page="kbPage"
+              :page-size="kbPageSize"
+              :total="filteredKbOptions.length"
+              layout="prev, pager, next"
+              small
+              class="summary-pagination"
+            />
+          </div>
+        </div>
+
+        <template #footer>
+          <el-button @click="reviewDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="reviewSaving" @click="confirmLiteratureReviewMode">确认</el-button>
+        </template>
+      </el-dialog>
+
       <!-- 主要内容区域 -->
       <el-main class="app-main" :class="{ 'homepage-main': !showHeader }">
         <router-view />
@@ -232,12 +294,18 @@ const activeTab = ref('database')
 // 全局模式（'generate' | 'rag' | 'summary'）
 const appModeValue = ref(localStorage.getItem('appMode') || 'generate')
 const selectedRagKbName = ref(localStorage.getItem('selectedRagKbName') || '')
+const selectedReviewKbName = ref(localStorage.getItem('selectedReviewKbName') || '')
 
 const summaryDialogVisible = ref(false)
 const summarySaving = ref(false)
 const ragDialogVisible = ref(false)
 const ragSaving = ref(false)
+const reviewDialogVisible = ref(false)
+const reviewSaving = ref(false)
 const ragSelection = ref({
+  kbId: null,
+})
+const reviewSelection = ref({
   kbId: null,
 })
 const summarySelection = ref({
@@ -383,15 +451,37 @@ const handleRagModeClick = async () => {
   await openRagDialog()
 }
 
+const handleLiteratureReviewModeClick = async () => {
+  if (!canSelectSummaryMode.value) {
+    ElMessage.warning('请先进入一个具体会话，再使用文献综述模式')
+    return
+  }
+
+  if (appModeValue.value === 'literature-review') {
+    appModeValue.value = 'generate'
+    localStorage.setItem('appMode', 'generate')
+    localStorage.removeItem('selectedReviewKbId')
+    localStorage.removeItem('selectedReviewKbName')
+    selectedReviewKbName.value = ''
+    ElMessage.success('已退出文献综述模式')
+    return
+  }
+
+  await openReviewDialog()
+}
+
 watch(
   () => canSelectSummaryMode.value,
   (enabled) => {
-    if (!enabled && (appModeValue.value === 'summary' || appModeValue.value === 'rag')) {
+    if (!enabled && (appModeValue.value === 'summary' || appModeValue.value === 'rag' || appModeValue.value === 'literature-review')) {
       appModeValue.value = 'generate'
       localStorage.setItem('appMode', 'generate')
       localStorage.removeItem('selectedRagKbId')
       localStorage.removeItem('selectedRagKbName')
+      localStorage.removeItem('selectedReviewKbId')
+      localStorage.removeItem('selectedReviewKbName')
       selectedRagKbName.value = ''
+      selectedReviewKbName.value = ''
     }
   }
 )
@@ -478,6 +568,22 @@ const openRagDialog = async () => {
   }
 }
 
+const openReviewDialog = async () => {
+  reviewDialogVisible.value = true
+  reviewSelection.value = {
+    kbId: null,
+  }
+  kbSearchKeyword.value = ''
+  kbPage.value = 1
+
+  try {
+    await loadKnowledgeBaseOptions()
+  } catch (error) {
+    console.error('加载知识库选项失败:', error)
+    ElMessage.error('加载知识库失败，请稍后重试')
+  }
+}
+
 const handleKbChange = async (kbId) => {
   summarySelection.value.fileId = null
   fileSearchKeyword.value = ''
@@ -548,6 +654,31 @@ const confirmRagMode = async () => {
     }
   } finally {
     ragSaving.value = false
+  }
+}
+
+const confirmLiteratureReviewMode = async () => {
+  if (!reviewSelection.value.kbId) {
+    ElMessage.warning('请先选择知识库')
+    return
+  }
+
+  const selectedKb = kbOptions.value.find((item) => item.id === reviewSelection.value.kbId)
+  reviewSaving.value = true
+  try {
+    localStorage.setItem('appMode', 'literature-review')
+    localStorage.setItem('selectedReviewKbId', String(reviewSelection.value.kbId))
+    localStorage.setItem('selectedReviewKbName', selectedKb?.name || '')
+    selectedReviewKbName.value = selectedKb?.name || ''
+    appModeValue.value = 'literature-review'
+
+    reviewDialogVisible.value = false
+    ElMessage.success('已切换到文献综述模式')
+    if (!route.path.startsWith('/chat')) {
+      await router.push('/chat')
+    }
+  } finally {
+    reviewSaving.value = false
   }
 }
 
@@ -666,6 +797,10 @@ const confirmRagMode = async () => {
 }
 
 .rag-mode-btn {
+  margin-left: 4px;
+}
+
+.review-mode-btn {
   margin-left: 4px;
 }
 

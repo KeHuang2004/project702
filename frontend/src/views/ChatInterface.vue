@@ -247,8 +247,10 @@ const searchKeyword = ref('')
 const ragMode = inject('appMode', ref('generate'))
 
 const selectedKbId = ref(localStorage.getItem('selectedRagKbId') || '')
+const selectedReviewKbId = ref(localStorage.getItem('selectedReviewKbId') || '')
 const selectedFileName = ref(localStorage.getItem('selectedFileName') || '')
 const isSummaryMode = computed(() => ragMode.value === 'summary')
+const isLiteratureReviewMode = computed(() => ragMode.value === 'literature-review')
 const summaryPrompt = computed(() => {
   const fileName = selectedFileName.value || '未选择文件'
   return `请帮我对 ${fileName} 这个文件进行要点提炼。`
@@ -256,7 +258,8 @@ const summaryPrompt = computed(() => {
 const canSendMessage = computed(() => {
   if (isLoading.value) return false
   if (isSummaryMode.value) return Boolean(localStorage.getItem('selectedFileId'))
-  if (ragMode.value === 'rag') return Boolean(selectedKbId.value)
+  if (ragMode.value === 'rag') return Boolean(selectedKbId.value && inputMessage.value.trim())
+  if (isLiteratureReviewMode.value) return Boolean(selectedReviewKbId.value && inputMessage.value.trim())
   return Boolean(inputMessage.value.trim())
 })
 
@@ -309,6 +312,7 @@ onMounted(async () => {
   await loadChatList()
   console.log('聊天界面已加载')
   selectedKbId.value = localStorage.getItem('selectedRagKbId') || ''
+  selectedReviewKbId.value = localStorage.getItem('selectedReviewKbId') || ''
   if (isSummaryMode.value) {
     selectedFileName.value = localStorage.getItem('selectedFileName') || ''
     inputMessage.value = summaryPrompt.value
@@ -426,13 +430,22 @@ const sendMessage = async () => {
         isLoading.value = false
         return
       }
+      if (isLiteratureReviewMode.value && !selectedReviewKbId.value) {
+        ElMessage.warning('请选择用于文献综述的知识库')
+        isLoading.value = false
+        return
+      }
 
       const selectedFileId = localStorage.getItem('selectedFileId')
       const payload = {
         query: message,
-        mode: ragMode.value === 'rag' ? 'rag' : (isSummaryMode.value ? 'summary' : 'normal'),
+        mode: ragMode.value === 'rag'
+          ? 'rag'
+          : (isSummaryMode.value ? 'summary' : (isLiteratureReviewMode.value ? 'literature-review' : 'normal')),
         file_id: isSummaryMode.value && selectedFileId ? Number(selectedFileId) : undefined,
-        kb_id: ragMode.value === 'rag' ? Number(selectedKbId.value) : undefined,
+        kb_id: ragMode.value === 'rag'
+          ? Number(selectedKbId.value)
+          : (isLiteratureReviewMode.value ? Number(selectedReviewKbId.value) : undefined),
       }
       const response = await chatAPI.sendMessage(currentChat.value.id, payload)
       const reply = response?.data?.reply || null
@@ -738,6 +751,14 @@ watch(
       selectedKbId.value = localStorage.getItem('selectedRagKbId') || ''
       if (!selectedKbId.value) {
         ElMessage.warning('请先点击顶部 RAG 模式按钮并选择知识库')
+      }
+      if (!isLoading.value) {
+        inputMessage.value = ''
+      }
+    } else if (mode === 'literature-review') {
+      selectedReviewKbId.value = localStorage.getItem('selectedReviewKbId') || ''
+      if (!selectedReviewKbId.value) {
+        ElMessage.warning('请先点击顶部文献综述按钮并选择知识库')
       }
       if (!isLoading.value) {
         inputMessage.value = ''

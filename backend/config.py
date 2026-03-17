@@ -62,6 +62,7 @@ class Config:
     # API配置
     API_RATE_LIMIT = os.environ.get("API_RATE_LIMIT") or "1000/hour"
     API_TIMEOUT = int(os.environ.get("API_TIMEOUT", 30))
+    RERANK_TIMEOUT = int(os.environ.get("RERANK_TIMEOUT", 120))
     PAGINATION_SIZE = int(os.environ.get("PAGINATION_SIZE", 20))
     PAGINATION_MAX_SIZE = int(os.environ.get("PAGINATION_MAX_SIZE", 100))
 

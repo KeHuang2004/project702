@@ -35,11 +35,13 @@ class ChatService:
 
     MODE_NORMAL = "normal"
     MODE_RAG = "rag"
+    MODE_LITERATURE_REVIEW = "literature-review"
     MODE_SUMMARY = "summary"
     MODE_LIST_CONTENTS = "list-contents"
     SUPPORTED_MODES = {
         MODE_NORMAL,
         MODE_RAG,
+        MODE_LITERATURE_REVIEW,
         MODE_SUMMARY,
         MODE_LIST_CONTENTS,
     }
@@ -249,6 +251,8 @@ class ChatService:
             return self._handle_normal_mode(query, session_id)
         if mode == self.MODE_RAG:
             return self._handle_rag_mode(query, session_id, kb_id=kb_id)
+        if mode == self.MODE_LITERATURE_REVIEW:
+            return self._handle_literature_review_mode(query, session_id, kb_id=kb_id)
         if mode == self.MODE_SUMMARY:
             return self._handle_summary_mode(query, session_id, file_id=file_id)
         if mode == self.MODE_LIST_CONTENTS:
@@ -281,8 +285,39 @@ class ChatService:
         normalized_kb_id = self._normalize_kb_id(kb_id)
         keywords = self._extract_rag_keywords(query)
         retrieval_query = " ".join(keywords).strip() if keywords else query
-        contexts = self._retrieve_rag_context(normalized_kb_id, retrieval_query)
+        contexts = self._retrieve_kb_context(
+            normalized_kb_id,
+            retrieval_query,
+            top_k=3,
+            threshold=0.001,
+        )
         prompt = self._build_rag_answer_prompt(query, contexts)
+        messages = [{"role": "user", "content": prompt}]
+        return self._request_remote_completion(messages)
+
+    def _handle_literature_review_mode(self, query: str, session_id: int, kb_id: int = None) -> str:
+        """文献综述模式：关键词提炼 -> 检索文献 -> 基于文献生成综述。"""
+        logger.info("Literature-review 模式调用开始: session=%s kb_id=%s", session_id, kb_id)
+        if Config.llm_mode != "remote":
+            raise ConfigurationError(
+                "当前仅支持 remote 模式的文献综述",
+                config_key="llm_mode",
+                config_value=Config.llm_mode,
+            )
+
+        normalized_kb_id = self._normalize_kb_id(kb_id)
+        keywords = self._extract_rag_keywords(query)
+        retrieval_query = " ".join(keywords).strip() if keywords else query
+        contexts = self._retrieve_kb_context(
+            normalized_kb_id,
+            retrieval_query,
+            top_k=10,
+            threshold=0.001,
+        )
+        if not contexts:
+            return "未在所选知识库中检索到相关文献，无法基于给定文献生成综述。请尝试调整问题描述或更换知识库。"
+
+        prompt = self._build_literature_review_prompt(query, contexts)
         messages = [{"role": "user", "content": prompt}]
         return self._request_remote_completion(messages)
 
@@ -396,12 +431,18 @@ class ChatService:
                 break
         return keywords
 
-    def _retrieve_rag_context(self, kb_id: int, retrieval_query: str) -> List[Dict[str, str]]:
+    def _retrieve_kb_context(
+        self,
+        kb_id: int,
+        retrieval_query: str,
+        top_k: int = 3,
+        threshold: float = 0.001,
+    ) -> List[Dict[str, str]]:
         retrieved = self.kb_service.retrieve_by_cosine(
             kb_id=kb_id,
             query=retrieval_query,
-            top_k=3,
-            threshold=0.001,
+            top_k=top_k,
+            threshold=threshold,
         )
         rows = retrieved.get("results", []) if isinstance(retrieved, dict) else []
         contexts: List[Dict[str, str]] = []
@@ -448,6 +489,35 @@ class ChatService:
             f"{knowledge_text}\n"
             "现在需要你结合已有的知识，重新回答用户的问题，并且在相关引用的知识，需要加上引用，"
             "在最后面给出知识列表，列出所有引用文件的文件name即可。"
+        )
+
+    def _build_literature_review_prompt(self, original_query: str, contexts: List[Dict[str, str]]) -> str:
+        literature_lines = []
+        for index, item in enumerate(contexts, start=1):
+            title = str(item.get("file_name") or f"文献{index}").strip() or f"文献{index}"
+            chunk_text = str(item.get("chunk_text") or "").strip()
+            if not chunk_text:
+                continue
+            literature_lines.append(
+                f"[{index}] 文献标题：《{title}》\n文献内容：{chunk_text}"
+            )
+
+        literature_text = "\n\n".join(literature_lines) if literature_lines else "未检索到相关文献内容。"
+
+        return (
+            "请基于以下文献内容及其对应的文献名字，基于用户的要求，写一篇综述。\n"
+            "1. 依照学术论文的格式写作。\n"
+            "2. 需要将这些提供的论文在正文中以 [序号] 形式引用，并列在文章末尾。\n"
+            "3. 文章内容必须严格基于所给文献事实，不得编造。\n"
+            "4. 条理清晰，语言朴实。\n"
+            "5. 如果文献未提供作者、年份、期刊等元数据，不得补写这些信息，可仅使用《文献标题》或 [序号] 引用。\n"
+            f"用户要求：{original_query}\n\n"
+            "相关文献内容：\n"
+            f"{literature_text}\n\n"
+            "输出要求：\n"
+            "1. 请输出题目、摘要、正文、结论、参考文献等结构。\n"
+            "2. 参考文献按 [序号]《文献标题》 的格式列出。\n"
+            "3. 若某一部分无法由给定文献支撑，请明确说明“给定文献未涉及”，不要自行补充。"
         )
 
     def _get_summary_file(self, file_id: int) -> File:
