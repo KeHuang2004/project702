@@ -1,0 +1,25 @@
+@import './base.css';
+
+#app {
+  width: 100%;
+  max-width: 1920px; /* 适配 2560x1600，大屏保持合理阅读宽度 */
+  margin: 0 auto;
+  padding: 1.5rem 2rem;
+  font-weight: normal;
+}
+
+a,
+.green {
+  text-decoration: none;
+  color: hsla(160, 100%, 37%, 1);
+  transition: 0.4s;
+  padding: 3px;
+}
+
+@media (hover: hover) {
+  a:hover {
+    background-color: hsla(160, 100%, 37%, 0.2);
+  }
+}
+
+/* 取消默认的大屏双栏栅格，交由各页面自行布局 */

@@ -1,0 +1,17 @@
+# Ignore everything by default.
+*
+
+# Keep this file tracked.
+!.gitignore
+
+# Keep backend and all of its contents...
+!backend/
+!backend/**
+
+# ...except backend/data.
+backend/data/
+
+# Keep frontend and all of its contents.
+!frontend/
+!frontend/**
+!frontend/**
